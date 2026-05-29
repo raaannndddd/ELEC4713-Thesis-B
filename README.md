@@ -10,11 +10,14 @@ Automated bias analysis of two consumer medical AI chatbots — **Doctronic** an
 
 This project investigates whether the responses of Doctronic and DrKhan differ systematically across patient demographics when presented with matched clinical scenarios. It consists of two phases:
 
-1. **Data collection** — Automated browser sessions send standardised patient prompts to both chatbots and record their responses.
-2. **Bias analysis** — Three complementary analyses characterise and test for demographic differences:
+1. **Data collection** — Automated browser sessions send standardised patient prompts to both chatbots and record their responses (single-turn and multi-turn).
+2. **Bias analysis** — Four complementary analyses characterise and test for demographic differences:
    - **Clinical feature analysis** (`clinical_bias_analysis_v3.py`) — Extracts 10 ordinal/continuous clinical features (urgency, empathy, medication specificity, etc.) and tests for demographic effects via mixed-effects models.
    - **Quantitative comparison** (`chatbot_quantitative_comparison.py`) — Extracts 19 quantitative linguistic features and runs paired Wilcoxon signed-rank tests on matched prompt conditions.
    - **ML distinguishability** (`chatbot_ml_comparison.py`) — Trains classifiers (TF-IDF + embeddings) to measure how linguistically separable the two chatbots are.
+   - **Longitudinal and trajectory analysis** (`longitudinal_analysis.py`) — Extracts per-turn features from multi-turn conversations and tests how responses evolve across turns, including demographic trajectory effects and cross-chatbot divergence.
+
+Additionally, `run_permanova.py` runs an exploratory **semantic embedding analysis** (PERMANOVA + PERMDISP) to test whether demographic group membership explains variance in the embedding space of responses.
 
 ---
 
@@ -24,7 +27,8 @@ This project investigates whether the responses of Doctronic and DrKhan differ s
 .
 ├── data/
 │   ├── web_conversations.json      # Short-form responses (Doctronic + DrKhan)
-│   └── web_convo_short.json        # Additional short-form conversation set
+│   ├── web_convo_short.json        # Additional short-form conversation set
+│   └── web_convo_long.json         # Multi-turn conversations (up to 16 turns)
 ├── web_automation/
 │   ├── base_web_client.py          # Playwright base class
 │   ├── doctronic_client.py         # Doctronic browser automation
@@ -34,17 +38,19 @@ This project investigates whether the responses of Doctronic and DrKhan differ s
 │   ├── run_chatbots.py             # Single-turn prompt runner
 │   └── run_comprehensive_experiment.py  # Multi-turn experiment runner
 ├── bias_analysis/
-│   ├── clinical_bias_analysis_v3.py       # Method 1: clinical feature analysis
-│   ├── chatbot_quantitative_comparison.py  # Method 2: quantitative comparison
-│   ├── chatbot_ml_comparison.py            # Method 3: ML distinguishability
-│   ├── analysis_constants.py       # Chatbot names, colours, labels
-│   ├── analysis_utils.py           # FDR, effect-size helpers
-│   ├── feature_registry.py         # Feature metadata registry
-│   ├── prompt_blocks.py            # Matched prompt-pair construction
-│   ├── schema_validation.py        # Input data validation
-│   ├── shared_clinical_features.py # Regex feature extractors (clinical)
+│   ├── clinical_bias_analysis_v3.py        # Method 1: clinical feature analysis
+│   ├── chatbot_quantitative_comparison.py   # Method 2: quantitative comparison
+│   ├── chatbot_ml_comparison.py             # Method 3: ML distinguishability
+│   ├── longitudinal_analysis.py             # Method 4: longitudinal & trajectory
+│   ├── run_permanova.py                     # Method 5: semantic embedding (PERMANOVA)
+│   ├── analysis_constants.py        # Chatbot names, colours, labels
+│   ├── analysis_utils.py            # FDR, effect-size helpers
+│   ├── feature_registry.py          # Feature metadata registry
+│   ├── prompt_blocks.py             # Matched prompt-pair construction
+│   ├── schema_validation.py         # Input data validation
+│   ├── shared_clinical_features.py  # Regex feature extractors (clinical)
 │   ├── shared_quantitative_features.py  # Feature extractors (quantitative)
-│   └── validation/                 # Inter-rater reliability tools
+│   └── validation/                  # Inter-rater reliability tools
 ├── models/
 │   ├── ollama_chat_client.py       # LLM patient-simulator (Ollama)
 │   └── ollama_client.py
@@ -133,6 +139,37 @@ python chatbot_ml_comparison.py
 - `--data-path PATH` — Override the default data file
 
 **Outputs:** `bias_analysis/plots/model_comparison_f1.png`, `bias_analysis/plots/confusion_matrix_best.png`
+
+---
+
+### Method 4 — Longitudinal and Trajectory Analysis
+
+Extracts per-turn features from multi-turn conversations and tests how responses evolve across turns.
+
+```bash
+python bias_analysis/longitudinal_analysis.py
+```
+
+**Options:**
+- `--no-nlp` — Skip semantic similarity features (faster, no GPU needed)
+- `--data-path PATH` — Override the default data file
+- `--seed N` — Set random seed (default: 42)
+
+**Outputs:** `bias_analysis/plots/longitudinal/`, `bias_analysis/longitudinal_features.csv`, `bias_analysis/longitudinal_trajectory_stats.csv`, `bias_analysis/longitudinal_bias_conv_level_tests.csv`, `bias_analysis/longitudinal_cross_chatbot_stats.csv`, `bias_analysis/longitudinal_short_vs_long_stats.csv`, `bias_analysis/longitudinal_bias_regression.csv`
+
+---
+
+### Method 5 — Semantic Embedding Analysis
+
+PERMANOVA + PERMDISP on sentence-transformer embeddings to test demographic variance in response embedding space.
+
+```bash
+python bias_analysis/run_permanova.py
+```
+
+**Requires:** `sentence-transformers` package (see `requirements.txt`)
+
+**Outputs:** `bias_analysis/permanova_results.csv`
 
 ---
 
