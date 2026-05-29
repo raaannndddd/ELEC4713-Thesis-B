@@ -97,7 +97,7 @@ class ConversationManagerV2:
 
     Parameters
     ----------
-    web_client   : an instance of DoctronicClient, HealthyDocClient, or DrKhanClient
+    web_client   : an instance of DoctronicClient or DrKhanClient
     llm_client   : an OllamaChatClient instance (shared; reset per conversation)
     chatbot_name : display name used in logging
     max_turns    : absolute maximum patient→chatbot exchanges (default 6)
@@ -166,7 +166,7 @@ class ConversationManagerV2:
                 if new_messages:
                     self._log("WARN",
                               f"Error reply (attempt {poll_attempt+1}): {new_messages[-1][:80]}")
-                    # Fill consent form if it appeared alongside the error (e.g. HealthyDoc turn 1)
+                    # Fill consent form if it appeared alongside the error (e.g. Doctronic turn 1)
                     was_agreed = getattr(self.web_client, '_terms_agreed', True)
                     self.web_client.fill_form_if_present(metadata)
                     now_agreed = getattr(self.web_client, '_terms_agreed', True)
