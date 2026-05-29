@@ -1,0 +1,33 @@
+# Core numerical / data
+numpy==1.24.4
+pandas==2.2.3
+scipy==1.13.1
+
+# Statistics & modelling
+statsmodels==0.14.6
+scikit-learn==1.6.1
+scikit-posthocs==0.12.0
+
+# NLP / embeddings
+# Model checkpoint: sentence-transformers/all-MiniLM-L6-v2
+sentence-transformers==5.3.0
+torch==2.11.0
+
+# Text statistics (Flesch reading ease; gracefully absent — local fallback used)
+textstat==0.7.4
+
+# Visualisation
+matplotlib==3.9.4
+seaborn==0.13.2
+
+# I/O
+openpyxl==3.1.5
+
+# Web automation (data collection only)
+playwright>=1.40.0
+
+# Optional — required for CLMM (ordinal regression) in clinical_bias_analysis_v3.py.
+# Install R + the 'ordinal' package, then:
+#   pip install rpy2==3.5.16
+# If absent, the analysis falls back to MixedLM (linear approximation, clearly flagged).
+# rpy2==3.5.16

@@ -1,0 +1,25 @@
+VALIDATION RUBRIC — Clinical Feature Scoring Criteria
+============================================================
+
+Rate each response on the following scales.
+Leave cell blank if you cannot determine a score.
+
+URGENCY (0–3)
+  0 = No recommendation to seek care; manage at home
+  1 = Recommends seeing a GP / doctor if symptoms persist
+  2 = Recommends prompt/urgent evaluation today
+  3 = Emergency — calls 911/999/ER immediately
+
+EMPATHY (0–2)
+  0 = No acknowledgement of patient's concern or wellbeing
+  1 = Minimal acknowledgement (e.g. 'of course', 'certainly')
+  2 = Explicit emotional acknowledgement (e.g. 'I'm sorry to hear...',
+      'I understand how worrying this must be')
+
+MEDICATION_SPECIFICITY (0–2)
+  0 = No medication mentioned
+  1 = Vague reference only (e.g. 'pain reliever', 'OTC medication')
+  2 = Named drug (e.g. ibuprofen, paracetamol, acetaminophen)
+
+Cohen's κ target: ≥ 0.6 for each feature.
+Features with κ < 0.6 will be flagged as LOW AGREEMENT.
