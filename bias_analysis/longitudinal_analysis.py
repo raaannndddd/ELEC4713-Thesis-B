@@ -90,6 +90,11 @@ REGRESSION_FEATURES = [
     "politeness_count", "warning_signs_count",
 ]
 
+# Ordinal features that require CLMM (R ordinal package) rather than linear MixedLM.
+# Treating these as continuous overestimates precision and violates distributional
+# assumptions; CLMM uses cumulative logit link and respects the ordered category structure.
+ORDINAL_CLMM_FEATURES = ["urgency_score", "medication_specificity", "empathy_score"]
+
 FEATURE_LABELS = {
     "word_count":              "Response Length (words)",
     "sentence_count":          "Sentence Count",
@@ -113,6 +118,140 @@ FEATURE_LABELS = {
     "semantic_similarity_prev":"Semantic Similarity (prev turn)",
     "semantic_similarity_t1":  "Semantic Similarity (turn 1)",
 }
+
+
+# ---------------------------------------------------------------------------
+# CLMM helpers (R ordinal package via rpy2)
+# ---------------------------------------------------------------------------
+
+_CLMM_AVAILABLE: bool | None = None  # None = unchecked
+
+
+def _check_clmm() -> bool:
+    """Return True if rpy2 and R's ordinal package are loadable."""
+    global _CLMM_AVAILABLE
+    if _CLMM_AVAILABLE is not None:
+        return _CLMM_AVAILABLE
+    try:
+        import rpy2.robjects as ro
+        ro.r("suppressPackageStartupMessages(library(ordinal))")
+        _CLMM_AVAILABLE = True
+    except Exception as exc:
+        print(f"  [CLMM] not available ({exc}). "
+              "Install rpy2 and the R 'ordinal' package to enable CLMM.")
+        _CLMM_AVAILABLE = False
+    return _CLMM_AVAILABLE
+
+
+def fit_clmm_safe(df_py: pd.DataFrame, feat: str, fixed_rhs: str,
+                  label: str = "") -> dict[str, dict] | None:
+    """Fit R ordinal::clmm for one ordinal feature; return term-level results.
+
+    Parameters
+    ----------
+    df_py : DataFrame with at least conversation_id, feat, and the columns
+            referenced in fixed_rhs.
+    feat : column name of the ordered outcome.
+    fixed_rhs : R formula RHS *excluding* the random-intercept term, e.g.
+                ``"turn_number + severity_num"`` or
+                ``"turn_number + race + gender + age_numeric + severity_num"``.
+    label : descriptive string used in warning messages.
+
+    Returns
+    -------
+    dict mapping term name → {coef, ci_lower, ci_upper, p_raw, converged}
+    on the logit (log-odds) scale, or None on failure.
+    Threshold / intercept parameters (named like "0|1") are excluded.
+    """
+    if not _check_clmm():
+        return None
+
+    import rpy2.robjects as ro
+    from rpy2.robjects import pandas2ri
+    from rpy2.robjects.conversion import localconverter
+    from scipy.stats import norm as _norm
+
+    # Identify needed columns from the RHS (rough parse — covers common patterns)
+    _rhs_tokens = set(fixed_rhs.replace("(", " ").replace(")", " ").split())
+    _extras = [c for c in ["race", "gender", "age_numeric", "symptom"]
+               if c in _rhs_tokens and c in df_py.columns]
+    needed = (["conversation_id", feat, "turn_number", "severity_num"]
+              + _extras)
+    sub = df_py[[c for c in dict.fromkeys(needed) if c in df_py.columns]].dropna().copy()
+    sub[feat] = sub[feat].astype(int)
+    for col in ["race", "gender", "symptom"]:
+        if col in sub.columns:
+            sub[col] = sub[col].astype(str)
+    sub["conversation_id"] = sub["conversation_id"].astype(str)
+
+    if (len(sub) < 20 or sub[feat].nunique() < 2
+            or sub["conversation_id"].nunique() < 5):
+        return None
+
+    try:
+        with localconverter(ro.default_converter + pandas2ri.converter):
+            r_df = ro.conversion.py2rpy(sub)
+        ro.globalenv["clmm_df"] = r_df
+        ro.r(f'clmm_df${feat} <- ordered(as.integer(clmm_df${feat}))')
+        formula_str = f"{feat} ~ {fixed_rhs} + (1|conversation_id)"
+        # nAGQ=0: Laplace approximation — far faster than quadrature on large
+        # datasets; Hess=TRUE needed to compute the Hessian for vcov/SE.
+        ro.r(
+            "clmm_fit <- suppressWarnings(tryCatch("
+            f"  clmm({formula_str}, data=clmm_df, nAGQ=0, Hess=TRUE),"
+            "  error=function(e) NULL"
+            "))"
+        )
+        if bool(ro.r("is.null(clmm_fit)")[0]):
+            print(f"  [CLMM] NULL fit — {label}")
+            return None
+
+        coef_names = list(ro.r("names(coef(clmm_fit))"))
+        coef_vals  = np.array(ro.r("as.numeric(coef(clmm_fit))"))
+        vcov_names = list(ro.r("rownames(vcov(clmm_fit))"))
+        vcov_diag  = np.array(ro.r("as.numeric(diag(vcov(clmm_fit)))"))
+
+        coef_map = dict(zip(coef_names, coef_vals))
+        se_map   = {n: float(np.sqrt(max(v, 0.0)))
+                    for n, v in zip(vcov_names, vcov_diag)}
+
+        # clmm stores convergence info differently across versions.
+        # A NULL convergence slot or code==0 both indicate success.
+        conv_raw = ro.r(
+            "tryCatch(as.integer(clmm_fit$convergence$code),"
+            " error=function(e) 0L)"
+        )
+        try:
+            conv_code = int(conv_raw[0])
+        except (TypeError, IndexError):
+            conv_code = 0  # NULL → converged
+        converged = conv_code == 0
+
+        results: dict[str, dict] = {}
+        for name in vcov_names:
+            if "|" in name:           # threshold parameter (e.g. "0|1")
+                continue
+            if name.startswith("ST"): # scale parameter (e.g. "ST1") — not a predictor
+                continue
+            coef = float(coef_map.get(name, np.nan))
+            if np.isnan(coef):        # term in vcov but not in fixed-effect coefs
+                continue
+            se   = se_map.get(name, np.nan)
+            z    = coef / se if se > 0 else np.nan
+            p    = float(2 * _norm.sf(abs(z))) if not np.isnan(z) else np.nan
+            results[name] = {
+                "coef":      coef,
+                "ci_lower":  coef - 1.96 * se if not np.isnan(se) else np.nan,
+                "ci_upper":  coef + 1.96 * se if not np.isnan(se) else np.nan,
+                "p_raw":     p,
+                "converged": converged,
+            }
+
+        return results
+
+    except Exception as exc:
+        print(f"  [CLMM] Exception — {label}: {exc}")
+        return None
 
 
 def _age_group(age: int) -> str:
@@ -221,13 +360,55 @@ def build_feature_df(records: list, use_nlp: bool) -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 
 def run_trajectory_analysis(df: pd.DataFrame) -> pd.DataFrame:
-    """Per-chatbot × per-feature MixedLM: feature ~ turn_number | conversation_id."""
+    """Per-chatbot × per-feature trajectory model: feature ~ turn_number | conversation_id.
+
+    Continuous/count features: linear MixedLM (statsmodels).
+    Ordinal features (ORDINAL_CLMM_FEATURES): CLMM via R ordinal::clmm.
+    CLMM coefficients are on the log-odds (logit) scale; MixedLM coefficients
+    are on the raw feature scale — both indicate direction and significance.
+    """
     rows = []
     for model in CHATBOTS:
         sub = df[df["model"] == model].copy()
         for feat in ALL_FEATURES:
             if feat not in sub.columns or sub[feat].isna().all():
                 continue
+
+            # ── Ordinal features: CLMM ────────────────────────────────────
+            if feat in ORDINAL_CLMM_FEATURES:
+                clmm_rhs = "turn_number + severity_num"
+                # symptom omitted from trajectory CLMM — many levels inflate the
+                # parameter space and slow optimisation; severity captures clinical
+                # severity which is sufficient for estimating the turn-number slope.
+                clmm_res = fit_clmm_safe(
+                    sub, feat, fixed_rhs=clmm_rhs, label=f"{model}/{feat}"
+                )
+                coef_turn = np.nan
+                ci_low = ci_hi = p_raw = np.nan
+                converged = None
+                if clmm_res and "turn_number" in clmm_res:
+                    t = clmm_res["turn_number"]
+                    coef_turn, ci_low, ci_hi = t["coef"], t["ci_lower"], t["ci_upper"]
+                    p_raw, converged = t["p_raw"], t["converged"]
+                elif clmm_res is None:
+                    print(f"  [CLMM] No result for {model}/{feat}")
+                rows.append({
+                    "model":          model,
+                    "feature":        feat,
+                    "coef_turn":      coef_turn,
+                    "ci_lower":       ci_low,
+                    "ci_upper":       ci_hi,
+                    "p_raw":          p_raw,
+                    "converged":      converged,
+                    "direction":      "stable",   # filled in after FDR
+                    "ordinal_approx": False,
+                    "turns_included": "1+",
+                    "fdr_scope":      "within_chatbot",
+                    "model_type":     "CLMM",
+                })
+                continue
+
+            # ── Continuous / count features: linear MixedLM ───────────────
             sub_f = sub[["conversation_id", "turn_number", feat]].dropna()
             if len(sub_f) < 20:
                 continue
@@ -249,13 +430,23 @@ def run_trajectory_analysis(df: pd.DataFrame) -> pd.DataFrame:
                     "ordinal_approx": False,
                     "turns_included": "1+",
                     "fdr_scope":      "within_chatbot",
+                    "model_type":     "MixedLM",
                 })
-            except Exception as e:
+            except Exception:
                 pass
 
     result = pd.DataFrame(rows)
     if not result.empty:
         result["p_fdr"] = apply_fdr(result["p_raw"].tolist())
+        # Update direction for CLMM rows (coef available after fitting)
+        clmm_mask = result["model_type"] == "CLMM"
+        result.loc[clmm_mask, "direction"] = result.loc[clmm_mask].apply(
+            lambda r: (
+                "increasing" if r["coef_turn"] > 0 else "decreasing"
+            ) if pd.notna(r.get("p_fdr")) and r.get("p_fdr", 1) < ALPHA
+            else "stable",
+            axis=1,
+        )
     return result
 
 
@@ -485,22 +676,65 @@ def run_bias_regression(df: pd.DataFrame) -> pd.DataFrame:
                         ci  = res.conf_int().loc[term]
                         p   = float(res.pvalues[term])
                         rows.append({
-                            "model":     model,
-                            "feature":   feat,
-                            "term":      term,
-                            "coef":      float(coef),
-                            "ci_lower":  float(ci[0]),
-                            "ci_upper":  float(ci[1]),
-                            "p_raw":     p,
-                            "feat_mean": feat_mean,
-                            "feat_std":  feat_std,
-                            "fdr_scope": "within_model_x_feature_demographic_terms",
+                            "model":          model,
+                            "feature":        feat,
+                            "term":           term,
+                            "coef":           float(coef),
+                            "ci_lower":       float(ci[0]),
+                            "ci_upper":       float(ci[1]),
+                            "p_raw":          p,
+                            "feat_mean":      feat_mean,
+                            "feat_std":       feat_std,
+                            "fdr_scope":      "within_model_x_feature_demographic_terms",
                             "ordinal_approx": False,
+                            "model_type":     "MixedLM",
                         })
                     except Exception:
                         pass
             except Exception:
                 pass
+
+    # ── Ordinal features via CLMM ──────────────────────────────────────────
+    for model in CHATBOTS:
+        sub = df[df["model"] == model].copy()
+        sub["age_numeric"] = sub["age"].astype(float)
+        for feat in ORDINAL_CLMM_FEATURES:
+            if feat not in sub.columns:
+                continue
+            rhs_parts = ["turn_number"]
+            if sub["race"].nunique()   >= 2: rhs_parts.append("race")
+            if sub["gender"].nunique() >= 2: rhs_parts.append("gender")
+            rhs_parts += ["age_numeric", "severity_num"]
+            # symptom omitted: many levels slow nAGQ=0 CLMM and add little
+            # to demographic inference; severity_num captures clinical intensity.
+            fixed_rhs = " + ".join(rhs_parts)
+
+            clmm_res = fit_clmm_safe(
+                sub, feat, fixed_rhs=fixed_rhs,
+                label=f"{model}/{feat} (regression)",
+            )
+            if not clmm_res:
+                continue
+
+            feat_mean = float(sub[feat].mean())
+            feat_std  = float(sub[feat].std())
+            for term, td in clmm_res.items():
+                if term in ("Intercept",):
+                    continue
+                rows.append({
+                    "model":          model,
+                    "feature":        feat,
+                    "term":           term,
+                    "coef":           td["coef"],
+                    "ci_lower":       td["ci_lower"],
+                    "ci_upper":       td["ci_upper"],
+                    "p_raw":          td["p_raw"],
+                    "feat_mean":      feat_mean,
+                    "feat_std":       feat_std,
+                    "fdr_scope":      "within_model_x_feature_demographic_terms",
+                    "ordinal_approx": False,
+                    "model_type":     "CLMM",
+                })
 
     result = pd.DataFrame(rows)
     if not result.empty:
@@ -569,7 +803,7 @@ def plot_trajectory_heatmap(traj_df: pd.DataFrame):
         cbar_kws={"label": "Slope (units/turn)"},
         xticklabels=[LABELS.get(c, c) for c in pivot.columns],
     )
-    ax.set_title("Trajectory Slopes (MixedLM coef_turn)")
+    ax.set_title("Trajectory Slopes (MixedLM: raw units; CLMM: log-odds)")
     ax.set_xlabel("")
     ax.set_ylabel("Feature")
     plt.tight_layout()

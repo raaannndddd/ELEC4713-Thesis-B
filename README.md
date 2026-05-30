@@ -11,9 +11,8 @@ Automated bias analysis of two consumer medical AI chatbots — **Doctronic** an
 This project investigates whether the responses of Doctronic and DrKhan differ systematically across patient demographics when presented with matched clinical scenarios. It consists of two phases:
 
 1. **Data collection** — Automated browser sessions send standardised patient prompts to both chatbots and record their responses (single-turn and multi-turn).
-2. **Bias analysis** — Four complementary analyses characterise and test for demographic differences:
-   - **Clinical feature analysis** (`clinical_bias_analysis_v3.py`) — Extracts 10 ordinal/continuous clinical features (urgency, empathy, medication specificity, etc.) and tests for demographic effects via mixed-effects models.
-   - **Quantitative comparison** (`chatbot_quantitative_comparison.py`) — Extracts 19 quantitative linguistic features and runs paired Wilcoxon signed-rank tests on matched prompt conditions.
+2. **Bias analysis** — Three complementary analyses characterise and test for demographic differences:
+   - **Feature-based bias analysis** (`clinical_bias_analysis_v3.py`, `chatbot_quantitative_comparison.py`) — Extracts two complementary feature sets: 10 ordinal/continuous clinical features (urgency, empathy, medication specificity, etc.) tested via mixed-effects models, and 19 quantitative linguistic features tested via paired Wilcoxon signed-rank on matched prompt conditions.
    - **ML distinguishability** (`chatbot_ml_comparison.py`) — Trains classifiers (TF-IDF + embeddings) to measure how linguistically separable the two chatbots are.
    - **Longitudinal and trajectory analysis** (`longitudinal_analysis.py`) — Extracts per-turn features from multi-turn conversations and tests how responses evolve across turns, including demographic trajectory effects and cross-chatbot divergence.
 
@@ -38,11 +37,11 @@ Additionally, `run_permanova.py` runs an exploratory **semantic embedding analys
 │   ├── run_chatbots.py             # Single-turn prompt runner
 │   └── run_comprehensive_experiment.py  # Multi-turn experiment runner
 ├── bias_analysis/
-│   ├── clinical_bias_analysis_v3.py        # Method 1: clinical feature analysis
-│   ├── chatbot_quantitative_comparison.py   # Method 2: quantitative comparison
-│   ├── chatbot_ml_comparison.py             # Method 3: ML distinguishability
-│   ├── longitudinal_analysis.py             # Method 4: longitudinal & trajectory
-│   ├── run_permanova.py                     # Method 5: semantic embedding (PERMANOVA)
+│   ├── clinical_bias_analysis_v3.py        # Method 1a: clinical feature analysis
+│   ├── chatbot_quantitative_comparison.py   # Method 1b: quantitative comparison
+│   ├── chatbot_ml_comparison.py             # Method 2: ML distinguishability
+│   ├── longitudinal_analysis.py             # Method 3: longitudinal & trajectory
+│   ├── run_permanova.py                     # Method 4: semantic embedding (PERMANOVA)
 │   ├── analysis_constants.py        # Chatbot names, colours, labels
 │   ├── analysis_utils.py            # FDR, effect-size helpers
 │   ├── feature_registry.py          # Feature metadata registry
@@ -91,9 +90,13 @@ ollama pull llama3
 
 All commands should be run from the **project root** directory.
 
-### Method 1 — Clinical Feature Analysis
+### Method 1 — Feature-Based Bias Analysis
 
-Extracts clinical features and tests for demographic effects using mixed-effects models.
+Two complementary feature sets, each run independently.
+
+**Method 1a — Clinical Feature Analysis**
+
+Extracts 10 clinical features and tests for demographic effects using mixed-effects models.
 
 ```bash
 cd bias_analysis
@@ -106,9 +109,7 @@ python clinical_bias_analysis_v3.py
 
 **Outputs:** `bias_analysis/plots/clinical_v3/`, `bias_analysis/clinical_features_v3.csv`
 
----
-
-### Method 2 — Quantitative Comparison
+**Method 1b — Quantitative Comparison**
 
 Extracts 19 quantitative linguistic features and runs Wilcoxon signed-rank tests on matched prompt pairs with BH-FDR correction.
 
@@ -125,7 +126,7 @@ python chatbot_quantitative_comparison.py
 
 ---
 
-### Method 3 — ML Distinguishability
+### Method 2 — ML Distinguishability
 
 Trains TF-IDF and embedding classifiers to measure how linguistically separable the chatbots are.
 
@@ -142,7 +143,7 @@ python chatbot_ml_comparison.py
 
 ---
 
-### Method 4 — Longitudinal and Trajectory Analysis
+### Method 3 — Longitudinal and Trajectory Analysis
 
 Extracts per-turn features from multi-turn conversations and tests how responses evolve across turns.
 
@@ -159,7 +160,7 @@ python bias_analysis/longitudinal_analysis.py
 
 ---
 
-### Method 5 — Semantic Embedding Analysis
+### Method 4 — Semantic Embedding Analysis
 
 PERMANOVA + PERMDISP on sentence-transformer embeddings to test demographic variance in response embedding space.
 
